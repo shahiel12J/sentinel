@@ -70,6 +70,7 @@ class AgentWorker(QThread):
     plan_done   = pyqtSignal(bool, str)
     output_text = pyqtSignal(str)
     preamble    = pyqtSignal(str)
+    files_found = pyqtSignal(list)   # List[Path] → opens FilePickerDialog on UI thread
 
     def __init__(self, agent, command: str):
         super().__init__()
@@ -78,12 +79,13 @@ class AgentWorker(QThread):
 
     def run(self):
         self.agent.process_command(
-            command       = self.command,
-            on_preamble   = self.preamble.emit,
-            on_step_start = self.step_start.emit,
-            on_step_done  = self.step_done.emit,
-            on_plan_done  = self.plan_done.emit,
-            on_output     = self.output_text.emit,
+            command        = self.command,
+            on_preamble    = self.preamble.emit,
+            on_step_start  = self.step_start.emit,
+            on_step_done   = self.step_done.emit,
+            on_plan_done   = self.plan_done.emit,
+            on_output      = self.output_text.emit,
+            on_files_found = self.files_found.emit,
         )
 
 
@@ -452,11 +454,11 @@ class SentinelWindow(QMainWindow):
         lay.addWidget(self.orb)
 
         # Thin vertical separator
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.VLine)
-        sep.setFixedWidth(1)
-        sep.setStyleSheet(f"background: {BORDER}; margin: 14px 0px;")
-        lay.addWidget(sep)
+        # sep = QFrame()
+        # sep.setFrameShape(QFrame.Shape.VLine)
+        # sep.setFixedWidth(1)
+        # sep.setStyleSheet(f"background: {BORDER}; margin: 14px 0px;")
+        # lay.addWidget(sep)
 
         title_block = QVBoxLayout()
         title_block.setSpacing(3)
@@ -476,7 +478,7 @@ class SentinelWindow(QMainWindow):
         badge_lay = QHBoxLayout(badge_row)
         badge_lay.setContentsMargins(0, 0, 0, 0)
         badge_lay.setSpacing(6)
-        for tag in ["Desktop AI Agent", "Local", "Always On"]:
+        for tag in ["Desktop AI Agent"]:
             b = QLabel(tag)
             b.setObjectName("SubtitleBadge")
             badge_lay.addWidget(b)
@@ -674,9 +676,9 @@ class SentinelWindow(QMainWindow):
 
         lay.addStretch()
 
-        gpu_lbl = QLabel("GPU: NVIDIA 3050  ·  Local AI")
-        gpu_lbl.setObjectName("StatusInfo")
-        lay.addWidget(gpu_lbl)
+        # gpu_lbl = QLabel("GPU: NVIDIA 3050  ·  Local AI")
+        # gpu_lbl.setObjectName("StatusInfo")
+        # lay.addWidget(gpu_lbl)
 
         return bar
 
@@ -965,6 +967,7 @@ class SentinelWindow(QMainWindow):
         self._worker.step_done.connect(self._on_step_done)
         self._worker.plan_done.connect(self._on_plan_done)
         self._worker.output_text.connect(self._on_output)
+        self._worker.files_found.connect(self._on_files_found)
         self._worker.start()
 
     def _on_preamble(self, text: str):
@@ -1003,6 +1006,27 @@ class SentinelWindow(QMainWindow):
     def _on_output(self, text: str):
         self.output_box.setVisible(True)
         self.output_box.setPlainText(text)
+
+    def _on_files_found(self, paths: list):
+        """Show the file picker dialog and dispatch the chosen action."""
+        from pathlib import Path
+        from ui.file_picker import FilePickerDialog, FileActionExecutor
+
+        path_objs = [Path(p) if not isinstance(p, Path) else p for p in paths]
+        n = len(path_objs)
+        title = f"Found {n} file{'s' if n != 1 else ''}"
+
+        result = FilePickerDialog.ask(self, path_objs, title)
+        if not result:
+            self._set_status("File selection cancelled.", TEXT_DIM)
+            return
+
+        selected, action = result
+        success, msg = FileActionExecutor.run(action, selected, parent_widget=self)
+        color = SUCCESS if success else ERROR
+        self._set_status(msg, color)
+        if success:
+            self.response_label.setText(msg)
 
     def _clear_log(self):
         for card in self._step_cards:

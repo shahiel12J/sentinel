@@ -28,6 +28,53 @@ from collections import Counter
 
 
 # ─────────────────────────────────────────────
+# Drive discovery + system-dir skip list
+# ─────────────────────────────────────────────
+
+# Directories that are never worth scanning for user files
+_SKIP_DIRS: set = {
+    "windows", "program files", "program files (x86)", "programdata",
+    "$recycle.bin", "system volume information", "recovery", "perflogs",
+    "boot", "msocache", "intel", "amd", "nvidia", "drivers",
+    "winsxs", "servicing", "assembly", "microsoft.net",
+    "node_modules", ".git", "__pycache__", ".cache", ".npm", ".venv",
+    "venv", "env", "dist-packages", "site-packages",
+}
+
+
+def _get_drives() -> List[Path]:
+    """Return all mounted drive roots, C: first on Windows."""
+    if sys.platform != "win32":
+        return [Path("/")]
+    drives: List[Path] = []
+    for letter in "CDEFGHIJKLMNOPQRSTUVWXYZAB":
+        p = Path(f"{letter}:\\")
+        try:
+            if p.exists():
+                drives.append(p)
+        except OSError:
+            pass
+    return drives
+
+
+def _user_priority_roots() -> List[Path]:
+    """High-value user directories searched first for fast results."""
+    home = Path.home()
+    candidates = [
+        home / "Desktop",
+        home / "Downloads",
+        home / "Documents",
+        home / "Pictures",
+        home / "Videos",
+        home / "Music",
+        home / "OneDrive",
+        home / "OneDrive - Personal",
+        home,
+    ]
+    return [p for p in candidates if p.exists()]
+
+
+# ─────────────────────────────────────────────
 # Common folders
 # ─────────────────────────────────────────────
 
@@ -54,6 +101,51 @@ def _resolve_location(location: str) -> Path:
 
 
 # ─────────────────────────────────────────────
+# Internal search helpers
+# ─────────────────────────────────────────────
+
+def _rglob_search(
+    roots:       List[Path],
+    ext_suffix:  str,
+    name_query:  str,
+    time_filter: str,
+    max_results: int,
+) -> Tuple[List[Path], set]:
+    """
+    rglob-based search over a list of root directories.
+    Returns (results, seen_set) so the caller can continue
+    searching elsewhere without duplicates.
+    """
+    results: List[Path] = []
+    seen:    set         = set()
+    q = name_query.lower()
+
+    for base in roots:
+        pattern = f"*.{ext_suffix}" if ext_suffix else "*"
+        try:
+            for p in base.rglob(pattern):
+                if p in seen or not p.is_file():
+                    continue
+                seen.add(p)
+                if q and q not in p.name.lower():
+                    continue
+                try:
+                    if time_filter == "today" and not _modified_today(p):
+                        continue
+                    if time_filter == "week" and not _modified_this_week(p):
+                        continue
+                except OSError:
+                    continue
+                results.append(p)
+                if len(results) >= max_results:
+                    return results, seen
+        except (PermissionError, OSError):
+            continue
+
+    return results, seen
+
+
+# ─────────────────────────────────────────────
 # File search
 # ─────────────────────────────────────────────
 
@@ -67,43 +159,118 @@ class FileTools:
         time_filter: str = "",
         location:    str = "",
         raw_query:   str = "",
+        name_query:  str = "",
         max_results: int = 200,
     ) -> Tuple[bool, str, List[Path]]:
         """
         Search for files matching criteria.
 
+        Pass ``name_query`` to search by filename substring across common
+        user directories.  Pass ``extension`` to filter by file type.
+        Both can be combined.
+
         Returns (success, message, [paths]).
         """
-        base = _resolve_location(location)
-        if not base.exists():
-            return False, f"Directory not found: {base}", []
+        ext_suffix = extension.lower() if extension and extension != "*" else ""
 
-        # Build glob pattern
-        pattern = f"*.{extension}" if extension and extension != "*" else "*"
+        # Explicit location given — search only there
+        if location:
+            base = _resolve_location(location)
+            if not base.exists():
+                return False, f"Directory not found: {base}", []
+            search_roots = [base]
+            results, seen = _rglob_search(
+                search_roots, ext_suffix, name_query, time_filter, max_results
+            )
+
+        elif name_query:
+            # ── Phase 1: priority user dirs (fast, most likely hits) ────
+            priority = _user_priority_roots()
+            results, seen = _rglob_search(
+                priority, ext_suffix, name_query, time_filter, max_results
+            )
+
+            # ── Phase 2: full drive scan skipping system dirs ───────────
+            if len(results) < max_results:
+                priority_strs = {str(p) for p in priority}
+                q = name_query.lower()
+                for drive in _get_drives():
+                    for dirpath, dirnames, filenames in os.walk(
+                        str(drive), topdown=True, onerror=None
+                    ):
+                        # Prune dirs we should never descend into
+                        dirnames[:] = [
+                            d for d in dirnames
+                            if d.lower() not in _SKIP_DIRS
+                            and not d.startswith("$")
+                            and not (d.startswith(".") and d not in (".", ".."))
+                        ]
+                        # Skip dirs already covered by the priority phase
+                        if any(dirpath.startswith(pr) for pr in priority_strs):
+                            dirnames[:] = []
+                            continue
+                        dp = Path(dirpath)
+                        for fname in filenames:
+                            if q not in fname.lower():
+                                continue
+                            if ext_suffix and not fname.lower().endswith(f".{ext_suffix}"):
+                                continue
+                            p = dp / fname
+                            if p in seen:
+                                continue
+                            seen.add(p)
+                            try:
+                                if time_filter == "today" and not _modified_today(p):
+                                    continue
+                                if time_filter == "week" and not _modified_this_week(p):
+                                    continue
+                            except OSError:
+                                continue
+                            results.append(p)
+                            if len(results) >= max_results:
+                                break
+                        if len(results) >= max_results:
+                            break
+                    if len(results) >= max_results:
+                        break
+
+        else:
+            # Extension / time filter only — rglob from home
+            base = _resolve_location("")
+            results, seen = _rglob_search(
+                [base], ext_suffix, "", time_filter, max_results
+            )
 
         try:
-            results: List[Path] = []
-            for p in base.rglob(pattern):
-                if not p.is_file():
-                    continue
-                if time_filter == "today" and not _modified_today(p):
-                    continue
-                elif time_filter == "week" and not _modified_this_week(p):
-                    continue
-                results.append(p)
-                if len(results) >= max_results:
-                    break
-
-            # Sort by modification time (newest first)
-            results.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            # Sort: exact name matches first, then by recency
+            if name_query:
+                q = name_query.lower()
+                def _rank(p: Path) -> tuple:
+                    n = p.stem.lower()
+                    if n == q or p.name.lower() == q:
+                        rank = 0
+                    elif n.startswith(q):
+                        rank = 1
+                    else:
+                        rank = 2
+                    try:
+                        return (rank, -p.stat().st_mtime)
+                    except OSError:
+                        return (rank, 0)
+                results.sort(key=_rank)
+            else:
+                results.sort(key=lambda p: p.stat().st_mtime, reverse=True)
 
             if not results:
-                msg = f"No {extension.upper() if extension != '*' else ''} files found"
+                label = f'"{name_query}"' if name_query else (
+                    f".{extension.upper()}" if extension != "*" else "any"
+                )
+                msg = f"No {label} files found"
                 if time_filter:
                     msg += f" (filter: {time_filter})"
                 return True, msg + ".", []
 
-            # Build human-readable list (show up to 20)
+            # Build human-readable summary (up to 20 lines)
             lines = [f"Found {len(results)} file{'s' if len(results) != 1 else ''}."]
             for p in results[:20]:
                 mtime = datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d %H:%M")

@@ -83,11 +83,12 @@ class SentinelAgent:
     def process_command(
         self,
         command: str,
-        on_preamble:   Optional[Callable[[str], None]] = None,
-        on_step_start: Optional[Callable[[int, str], None]] = None,
-        on_step_done:  Optional[Callable[[int, str, str], None]] = None,
-        on_plan_done:  Optional[Callable[[bool, str], None]] = None,
-        on_output:     Optional[Callable[[str], None]] = None,
+        on_preamble:    Optional[Callable[[str], None]] = None,
+        on_step_start:  Optional[Callable[[int, str], None]] = None,
+        on_step_done:   Optional[Callable[[int, str, str], None]] = None,
+        on_plan_done:   Optional[Callable[[bool, str], None]] = None,
+        on_output:      Optional[Callable[[str], None]] = None,
+        on_files_found: Optional[Callable[[list], None]] = None,
     ) -> None:
         """
         Full pipeline: classify → plan → execute.
@@ -134,10 +135,11 @@ class SentinelAgent:
                 log.exception("on_preamble callback raised")
 
         # ── 4. Wire executor callbacks ─────────────────────────────────
-        self.executor.on_step_start = on_step_start
-        self.executor.on_step_done  = on_step_done
-        self.executor.on_plan_done  = on_plan_done
-        self.executor.on_output     = on_output
+        self.executor.on_step_start  = on_step_start
+        self.executor.on_step_done   = on_step_done
+        self.executor.on_plan_done   = on_plan_done
+        self.executor.on_output      = on_output
+        self.executor.on_files_found = on_files_found
 
         # ── 5. Execute ─────────────────────────────────────────────────
         try:

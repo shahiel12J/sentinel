@@ -254,6 +254,23 @@ def _extract_entities(text: str, intent: str) -> Dict[str, str]:
         m = re.search(r"(?:in|from|inside)\s+(?:my\s+)?([a-z]+)\s*folder", t, re.I)
         if m:
             entities["location"] = m.group(1).lower()
+        # Name-based search: "find resume", "locate budget", "where is report.pdf"
+        if not entities.get("extension"):
+            _name_m = re.search(
+                r"(?:find|locate|where(?:'?s| is)|search for|find my|locate my|look for)"
+                r"\s+(?:(?:the|my|a|an)\s+)?"
+                r"([a-zA-Z0-9_\-][a-zA-Z0-9_\-\. ]*?)"
+                r"(?:\s+(?:file|files|document|doc|in|on|from|today|this|folder)|\s*$)",
+                t, re.I
+            )
+            if _name_m:
+                _name = _name_m.group(1).strip()
+                _generic = {
+                    "files", "all", "every", "documents", "folders",
+                    "pdfs", "images", "videos", "music", "photos",
+                }
+                if _name and _name.lower() not in _generic:
+                    entities["filename"] = _name
 
     if intent == "create_folder":
         m = _FOLDER_PAT.search(t)

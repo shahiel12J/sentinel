@@ -53,10 +53,11 @@ class SentinelExecutor:
         self.system = SystemTools()
 
         # Callbacks (set by UI before calling execute)
-        self.on_step_start: Optional[Callable] = None
-        self.on_step_done:  Optional[Callable] = None
-        self.on_plan_done:  Optional[Callable] = None
-        self.on_output:     Optional[Callable] = None
+        self.on_step_start:  Optional[Callable] = None
+        self.on_step_done:   Optional[Callable] = None
+        self.on_plan_done:   Optional[Callable] = None
+        self.on_output:      Optional[Callable] = None
+        self.on_files_found: Optional[Callable] = None  # fn(List[Path])
 
         # State shared across steps within a plan
         self._step_context: Dict[str, Any] = {}
@@ -175,8 +176,11 @@ class SentinelExecutor:
                     time_filter = params.get("time_filter", ""),
                     location    = params.get("location", ""),
                     raw_query   = params.get("raw_query", ""),
+                    name_query  = params.get("name_query", ""),
                 )
                 self._step_context["found_files"] = paths
+                if paths and self.on_files_found:
+                    self.on_files_found(paths)
                 return success, msg
 
             elif action == "create_folder":
@@ -335,6 +339,10 @@ class SentinelExecutor:
     def _fire_output(self, text: str):
         if self.on_output:
             self.on_output(text)
+
+    def _fire_files_found(self, paths: list):
+        if self.on_files_found:
+            self.on_files_found(paths)
 
 
 # ─────────────────────────────────────────────

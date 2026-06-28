@@ -117,7 +117,12 @@ class SentinelPlanner:
         ext      = e.get("extension", "*")
         time_f   = e.get("time_filter", "")
         location = e.get("location", "")
-        desc = f"Searching for {'.' + ext if ext != '*' else 'all'} files"
+        filename = e.get("filename", "")
+
+        if filename:
+            desc = f'Searching for "{filename}"'
+        else:
+            desc = f"Searching for {'.' + ext if ext != '*' else 'all'} files"
         if time_f == "today":
             desc += " modified today"
         if location:
@@ -131,8 +136,13 @@ class SentinelPlanner:
                 ActionStep(
                     description=desc + " …",
                     tool="files", action="search_files",
-                    params={"extension": ext, "time_filter": time_f,
-                            "location": location, "raw_query": cmd}
+                    params={
+                        "extension":  ext,
+                        "time_filter": time_f,
+                        "location":   location,
+                        "raw_query":  cmd,
+                        "name_query": filename,
+                    }
                 ),
             ]
         )

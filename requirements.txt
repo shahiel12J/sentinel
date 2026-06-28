@@ -1,0 +1,30 @@
+# Sentinel Desktop AI Agent - Requirements
+# Python 3.10+
+
+# Core ML / GPU
+torch>=2.1.0
+torchvision>=0.16.0
+
+# UI Framework
+PyQt5>=5.15.9
+
+# System utilities
+psutil>=5.9.8
+pywin32>=306; sys_platform=="win32"
+pycaw>=20220416; sys_platform=="win32"
+comtypes>=1.2.0; sys_platform=="win32"
+
+# File & data
+Pillow>=10.0.0
+numpy>=1.24.0
+pathlib2>=2.3.7
+
+# Text processing (for summarization)
+nltk>=3.8.1
+
+# Database
+# sqlite3 is built into Python - no extra install needed
+
+# Utilities
+colorama>=0.4.6
+tqdm>=4.66.0

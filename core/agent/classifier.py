@@ -191,16 +191,15 @@ _DEST_PAT = re.compile(
 _PREF_KEY_PAT   = re.compile(r"my\s+([a-z ]+?)\s+is\b", re.IGNORECASE)
 _PREF_VALUE_PAT = re.compile(r"\bis\s+([a-zA-Z0-9_\-/.\\: ]+?)(?:\s*$|,|\.|;)", re.IGNORECASE)
 
-# "open / close / launch X"
+# "open / close / launch X"  (fallback — primary extraction uses _find_app_in_text)
 _APP_PAT = re.compile(
     r"(?:open|launch|start|close|quit|kill|terminate|exit|run|fire up|bring up)\s+"
-    r"(?:up\s+)?(?:my\s+)?([a-z ]+?)(?:\s+for me)?$",
+    r"(?:up\s+)?(?:my\s+)?([a-z][a-z0-9 ]+?)(?:\s+(?:for me|please|now|up|again|right now))?\s*$",
     re.IGNORECASE
 )
 
 # Filename
 _FILE_PAT = re.compile(r"[\w\-]+\.\w{2,5}", re.IGNORECASE)
-
 
 # URL pattern (domain.tld or full URL)
 _URL_PAT = re.compile(
@@ -211,16 +210,64 @@ _URL_PAT = re.compile(
 # Volume level: "50", "50%", "half", "max", "min"
 _VOL_LEVEL_PAT = re.compile(r"\b(\d{1,3})\s*%?", re.IGNORECASE)
 
+# Filler stripping helpers
+_POLITE_PREFIX_PAT = re.compile(
+    r"^(?:can\s+you|could\s+you|please|would\s+you|"
+    r"i(?:'d)?\s+(?:want|need|like)\s+(?:you\s+)?(?:to\s+)?|"
+    r"i\s+want\s+to|i\s+need\s+to|help\s+me|go\s+ahead\s+and)\s+",
+    re.IGNORECASE
+)
+_SUFFIX_PAT = re.compile(
+    r"\s+(?:for\s+me|please|now|right\s+now|asap|immediately|quickly|again|up)\s*$",
+    re.IGNORECASE
+)
+_ACTION_VERB_PAT = re.compile(
+    r"^(?:open|launch|start|close|quit|kill|terminate|exit|run|"
+    r"fire\s+up|bring\s+up|shut\s+down|boot\s+up|load)\s+(?:up\s+)?(?:my\s+)?",
+    re.IGNORECASE
+)
+
+
+def _strip_fillers(text: str) -> str:
+    """Remove polite prefixes and trailing filler phrases."""
+    t = _POLITE_PREFIX_PAT.sub("", text.strip())
+    t = _SUFFIX_PAT.sub("", t)
+    return t.strip()
+
+
+def _find_app_in_text(text: str) -> Optional[str]:
+    """Find the longest matching app alias in text; return canonical app key."""
+    t = text.strip().lower()
+    for alias in sorted(APP_ALIASES.keys(), key=len, reverse=True):
+        try:
+            if re.search(r"\b" + re.escape(alias) + r"\b", t):
+                val = APP_ALIASES[alias]
+                if not val.startswith("__"):
+                    return val
+        except re.error:
+            if alias in t:
+                val = APP_ALIASES[alias]
+                if not val.startswith("__"):
+                    return val
+    return None
+
 
 def _extract_entities(text: str, intent: str) -> Dict[str, str]:
     t = text.strip()
     entities: Dict[str, str] = {}
 
     if intent in ("open_app", "close_app"):
-        m = _APP_PAT.search(t)
-        if m:
-            raw = m.group(1).strip()
-            entities["app"] = resolve_app(raw)
+        # Primary: strip polite wrappers + action verb, then longest-alias match
+        t_clean = _strip_fillers(t)
+        verb_free = _ACTION_VERB_PAT.sub("", t_clean).strip()
+        app = _find_app_in_text(verb_free)
+        # Fallback: regex
+        if not app:
+            m = _APP_PAT.search(t)
+            if m:
+                app = resolve_app(m.group(1).strip())
+        if app:
+            entities["app"] = app
 
     if intent == "open_url":
         # Try to extract a domain/URL from the text
@@ -348,151 +395,301 @@ def _extract_entities(text: str, intent: str) -> Dict[str, str]:
 # Rule-based classifier (always available)
 # ─────────────────────────────────────────────
 
-_RULES: List[Tuple[str, List[str]]] = [
+# ─────────────────────────────────────────────
+# Keyword intent signals
+# Format: {intent: (trigger_words, context_words)}
+# Score = (trigger_hits × 3) + context_hits
+# A match requires at least one trigger word.
+# ─────────────────────────────────────────────
+
+_INTENT_KEYWORDS: Dict[str, Tuple[frozenset, frozenset]] = {
     # ── Apps ──────────────────────────────────────────────────────────
-    ("open_app",      ["open ", "launch ", "start ", "fire up", "bring up", "run "]),
-    ("close_app",     ["close ", "quit ", "kill ", "terminate ", "force quit", "shut down "]),
+    "open_app":       (frozenset({"open","launch","start","run","fire","bring","boot","load"}),
+                       frozenset({"app","application","program"})),
+    "close_app":      (frozenset({"close","quit","kill","terminate","exit","force"}),
+                       frozenset()),
     # ── Files ─────────────────────────────────────────────────────────
-    ("file_search",   ["find files", "find all", "search for files", "search my files",
-                       "search my ", "locate files", "find every", "find my ",
-                       "search for .*\\.\\w+", "where are my"]),
-    ("create_folder", ["create a folder", "make a folder", "new folder", "create folder",
-                       "make a directory", "create a directory", "mkdir"]),
-    ("move_files",    ["move ", "relocate "]),
-    ("copy_files",    ["copy ", "duplicate "]),
-    ("delete_files",  ["delete ", "remove ", "trash ", "erase "]),
-    ("rename_file",   ["rename "]),
-    ("open_file",     ["open file", "open the file"]),
-    ("summarize_file",["summarize", "summarise", "tldr", "what does this file", "give me a summary"]),
-    ("list_files",    ["list files", "show me files", "show files", "list all files",
-                       "what files", "show all files"]),
-    # ── Memory ────────────────────────────────────────────────────────
-    ("remember",      ["remember ", "remember that", "keep in mind", "save this",
-                       "note that", "store this", "don't forget"]),
-    ("recall",        ["what is my", "what's my", "do you remember", "what did i say",
-                       "recall my", "what have i told you", "what do you know about me"]),
+    "file_search":    (frozenset({"find","search","locate","where","look","seek"}),
+                       frozenset({"file","files","document","documents","folder",
+                                  "pdf","mp3","png","jpg","mp4","txt","zip","exe",
+                                  "log","csv","xlsx","docx","json","py","gif","jpeg"})),
+    "create_folder":  (frozenset({"create","make","mkdir","new","add"}),
+                       frozenset({"folder","directory","dir"})),
+    "move_files":     (frozenset({"move","relocate","transfer","send","put"}),
+                       frozenset({"file","files","folder","into"})),
+    "copy_files":     (frozenset({"copy","duplicate","clone","backup","replicate"}),
+                       frozenset({"file","files","folder"})),
+    "delete_files":   (frozenset({"delete","remove","trash","erase","wipe","clean","purge"}),
+                       frozenset({"file","files","folder"})),
+    "rename_file":    (frozenset({"rename","relabel"}),
+                       frozenset()),
+    "open_file":      (frozenset({"open","read","view","show","access"}),
+                       frozenset({"file","document","doc","pdf","txt","csv","log","spreadsheet"})),
+    "list_files":     (frozenset({"list","ls","show","display","see"}),
+                       frozenset({"file","files","folder","directory","contents","inside","in"})),
+    "summarize_file": (frozenset({"summarize","summarise","summary","gist","overview","tldr"}),
+                       frozenset({"file","document","doc","text"})),
     # ── Volume ────────────────────────────────────────────────────────
-    ("set_volume",    ["set volume to", "set the volume to", "volume to ", "volume at ",
-                       "set volume at", "max volume", "minimum volume", "full volume",
-                       "half volume", "volume 5", "volume 1", "volume 2", "volume 3",
-                       "volume 4", "volume 6", "volume 7", "volume 8", "volume 9",
-                       "volume 0"]),
-    ("volume_up",     ["volume up", "turn up the volume", "turn the volume up",
-                       "increase volume", "increase the volume", "louder", "raise the volume",
-                       "raise volume", "increase sound", "crank it up", "make it louder",
-                       "a bit louder", "bit louder"]),
-    ("volume_down",   ["volume down", "turn down the volume", "turn the volume down",
-                       "decrease volume", "decrease the volume", "quieter", "lower the volume",
-                       "lower volume", "reduce volume", "reduce the volume", "keep it down",
-                       "make it quieter", "a bit quieter", "bit quieter", "less loud"]),
-    ("mute",          ["mute", "unmute", "silence", "turn off sound", "toggle mute",
-                       "no sound", "go quiet"]),
+    "volume_up":      (frozenset({"louder","crank","amplify"}),
+                       frozenset()),
+    "volume_down":    (frozenset({"quieter","softer"}),
+                       frozenset()),
+    "set_volume":     (frozenset({"set","put","change","adjust"}),
+                       frozenset({"volume"})),
+    "mute":           (frozenset({"mute","unmute","silence"}),
+                       frozenset({"sound","audio","volume"})),
     # ── Media ─────────────────────────────────────────────────────────
-    ("media_play",    ["play music", "play song", "resume music", "resume playback",
-                       "unpause music", "unpause song", "play spotify", "play audio"]),
-    ("media_pause",   ["pause music", "pause song", "pause playback", "pause the music",
-                       "stop the music", "pause spotify"]),
-    ("media_next",    ["next song", "next track", "skip song", "skip track", "skip this",
-                       "next music", "skip ahead"]),
-    ("media_prev",    ["previous song", "previous track", "prev song", "last song",
-                       "go back song", "back a track"]),
-    ("media_stop",    ["stop music", "stop playback", "stop spotify", "stop playing"]),
+    "media_play":     (frozenset({"play","resume","unpause","continue"}),
+                       frozenset({"music","song","track","audio","media","spotify","podcast","playlist"})),
+    "media_pause":    (frozenset({"pause"}),
+                       frozenset({"music","song","track","spotify","playback","media","playing"})),
+    "media_next":     (frozenset({"next","skip","forward","ahead"}),
+                       frozenset({"song","track","music"})),
+    "media_prev":     (frozenset({"previous","prev","rewind","back"}),
+                       frozenset({"song","track","music"})),
+    "media_stop":     (frozenset({"stop","halt"}),
+                       frozenset({"music","playback","spotify","playing","song","track","audio"})),
     # ── Screenshot ────────────────────────────────────────────────────
-    ("screenshot",    ["screenshot", "screen capture", "screengrab", "capture the screen",
-                       "print screen", "snap the screen", "take a screenshot", "grab screen"]),
+    "screenshot":     (frozenset({"screenshot","screengrab","snap","capture","grab"}),
+                       frozenset({"screen","display"})),
     # ── Power / session ───────────────────────────────────────────────
-    ("shutdown",      ["shutdown", "shut down", "power off", "turn off the computer",
-                       "turn off my computer", "turn off my pc"]),
-    ("restart",       ["restart", "reboot", "restart my computer", "restart the pc"]),
-    ("sleep",         ["sleep", "hibernate", "put to sleep", "suspend"]),
-    ("lock_screen",   ["lock", "lock screen", "lock my computer", "lock the screen",
-                       "lock pc", "lock my pc", "win+l"]),
-    ("cancel_shutdown",["cancel shutdown", "abort shutdown", "stop shutdown", "undo shutdown"]),
-    # ── Display / windows ─────────────────────────────────────────────
-    ("brightness_up", ["brightness up", "brighter", "increase brightness",
-                       "screen brighter", "make it brighter", "more brightness"]),
-    ("brightness_down",["brightness down", "dimmer", "decrease brightness",
-                        "screen dimmer", "make it dimmer", "less brightness", "dim the screen"]),
-    ("minimize_all",  ["minimize all", "show desktop", "hide all windows", "win+d",
-                       "clear the screen", "minimise all"]),
+    "shutdown":       (frozenset({"shutdown","poweroff"}),
+                       frozenset({"computer","pc","machine","system"})),
+    "restart":        (frozenset({"restart","reboot","relaunch"}),
+                       frozenset({"computer","pc","machine","system"})),
+    "sleep":          (frozenset({"sleep","hibernate","suspend"}),
+                       frozenset()),
+    "lock_screen":    (frozenset({"lock"}),
+                       frozenset({"screen","computer","pc","workstation","session"})),
+    "cancel_shutdown":(frozenset({"cancel","abort","undo","prevent"}),
+                       frozenset({"shutdown","restart","reboot","shutting"})),
+    # ── Brightness / display ──────────────────────────────────────────
+    "brightness_up":  (frozenset({"brighter","increase","raise","boost"}),
+                       frozenset({"brightness","screen","display","monitor"})),
+    "brightness_down":(frozenset({"dimmer","dim","decrease","lower","reduce"}),
+                       frozenset({"brightness","screen","display","monitor"})),
+    "minimize_all":   (frozenset({"minimize","minimise","hide"}),
+                       frozenset({"windows","desktop","all","everything"})),
     # ── System info ───────────────────────────────────────────────────
-    ("system_info",   ["cpu usage", "ram usage", "memory usage", "disk space",
-                       "system info", "system stats", "ip address", "battery level",
-                       "how much ram", "system status", "pc info", "computer info"]),
-    ("process_list",  ["running apps", "running processes", "what's running", "what is running",
-                       "open apps", "active apps", "list processes", "show processes",
-                       "task list", "what programs are open", "list running"]),
-    # ── Web & URLs ────────────────────────────────────────────────────
-    ("web_search",    ["search online", "search the web", "look up online",
-                       "google it", "search google", "web search", "online search",
-                       "find online", "look it up"]),
-    ("open_url",      ["go to ", "visit ", "open website", "navigate to ", "load website",
-                       "open url", "browse to"]),
-    # ── Time / date ───────────────────────────────────────────────────
-    ("time_query",    ["what time is it", "what's the time", "current time",
-                       "tell me the time", "what day is it", "what's today",
-                       "what is today", "today's date", "what date is it",
-                       "what's the date", "current date"]),
+    "system_info":    (frozenset({"cpu","ram","memory","disk","battery","stats",
+                                  "info","status","usage","specs","storage","speed"}),
+                       frozenset({"system","pc","computer","machine"})),
+    "process_list":   (frozenset({"running","active"}),
+                       frozenset({"apps","processes","programs","tasks","applications"})),
+    # ── Time ──────────────────────────────────────────────────────────
+    "time_query":     (frozenset({"time","date","clock","today"}),
+                       frozenset()),
     # ── Reminders ─────────────────────────────────────────────────────
-    ("schedule_task", ["remind me", "set a timer", "alarm in", "set an alarm",
-                       "set a reminder", "timer for", "notify me in"]),
-    # ── Help ──────────────────────────────────────────────────────────
-    ("help",          ["help", "what can you do", "list your commands", "what commands",
-                       "show commands", "what do you support", "capabilities"]),
+    "schedule_task":  (frozenset({"remind","reminder","timer","alarm","notify","alert","schedule"}),
+                       frozenset()),
+    # ── Web ───────────────────────────────────────────────────────────
+    "web_search":     (frozenset({"google","bing","search","lookup","research"}),
+                       frozenset({"online","web","internet"})),
+    "open_url":       (frozenset({"go","visit","navigate","browse"}),
+                       frozenset({"website","url","link","site","page"})),
+    # ── Memory ────────────────────────────────────────────────────────
+    "remember":       (frozenset({"remember","store","save","note","memorize","memorise","keep","learn"}),
+                       frozenset()),
+    "recall":         (frozenset({"recall","retrieve"}),
+                       frozenset({"my","memory","stored","saved"})),
     # ── Conversational ────────────────────────────────────────────────
-    ("greet",         ["hello", "hi sentinel", "hey sentinel", "good morning",
-                       "good afternoon", "good evening", "howdy", "greetings", "what's up"]),
-    ("goodbye",       ["bye", "goodbye", "see you", "take care", "i am done",
-                       "that is all", "have a good one", "i'm done", "catch you later",
-                       "exit sentinel", "quit sentinel", "close sentinel"]),
-    ("thanks",        ["thank you", "thanks", "cheers", "appreciate it", "nice one",
-                       "brilliant", "great job", "well done", "that is perfect", "excellent",
-                       "many thanks"]),
-    ("chitchat",      ["how are you", "who are you", "what is your name", "tell me a joke",
-                       "are you an ai", "are you sentient", "meaning of life",
-                       "talk to me", "say something", "are you smart"]),
-    ("clarify",       ["what did you do", "explain that", "what does that mean",
-                       "can you repeat", "i do not understand", "what happened",
-                       "say that again", "why did you do that"]),
-    ("status",        ["what are you doing", "are you busy", "are you ready",
-                       "what is your status", "are you working"]),
-]
+    "help":           (frozenset({"help","commands","capabilities","support","guide","instructions"}),
+                       frozenset()),
+    "greet":          (frozenset({"hello","hi","hey","howdy","greetings","morning","afternoon","evening"}),
+                       frozenset()),
+    "goodbye":        (frozenset({"bye","goodbye","farewell","later","cya"}),
+                       frozenset()),
+    "thanks":         (frozenset({"thanks","thank","cheers","appreciate","brilliant","excellent"}),
+                       frozenset()),
+    "chitchat":       (frozenset({"joke","funny","sentient","meaning","opinion","feelings","clever"}),
+                       frozenset()),
+    "clarify":        (frozenset({"explain","clarify","repeat","mean"}),
+                       frozenset({"what","that","again","why","did","just"})),
+    "status":         (frozenset({"ready","busy","working","doing"}),
+                       frozenset({"you","are","sentinel"})),
+}
 
 
 def rule_classify(text: str) -> ClassificationResult:
-    """Fast rule-based classifier — used as primary or fallback."""
+    """
+    Keyword-scoring classifier — matches intent from individual words so
+    natural phrasing ("can you please open chrome for me") works without
+    needing exact phrases.
+    """
     t = text.lower().strip()
+    words = set(re.findall(r"\b\w+\b", t))
 
-    # Special case: bare "google X" → web_search  (before open_app picks up "google")
-    if re.match(r"^google\s+.+", t):
+    # ── High-priority exact patterns ─────────────────────────────────
+
+    # "google X" → web_search
+    if re.match(r"^google\b.+", t):
         return ClassificationResult(
             intent="web_search", confidence=0.90,
             entities={"query": text}, source="rule"
         )
 
-    # Special case: domain-like token in isolation → open_url
-    if re.match(r"^(?:go to|visit|open|navigate to)\s+\S+\.\S+", t):
-        entities = _extract_entities(text, "open_url")
+    # URL in text → open_url
+    if re.search(r"(?:https?://|www\.)\S+|\b\w+\.(com|org|net|io|co|uk|edu|gov)\b", t):
         return ClassificationResult(
-            intent="open_url", confidence=0.88, entities=entities, source="rule"
+            intent="open_url", confidence=0.92,
+            entities=_extract_entities(text, "open_url"), source="rule"
         )
 
-    for intent, keywords in _RULES:
-        for kw in keywords:
-            try:
-                matched = re.search(kw, t) if any(c in kw for c in r"\.+*?[](){}^$|") else kw in t
-            except re.error:
-                matched = kw in t
-            if matched:
-                entities = _extract_entities(text, intent)
-                return ClassificationResult(
-                    intent=intent,
-                    confidence=0.85,
-                    entities=entities,
-                    source="rule",
-                )
+    # "show desktop" → minimize_all
+    if re.search(r"\bshow\s+(?:the\s+)?desktop\b", t):
+        return ClassificationResult(intent="minimize_all", confidence=0.92, entities={}, source="rule")
 
-    return ClassificationResult(intent="unknown", confidence=0.5, source="rule")
+    # "print screen" / "take a screenshot" → screenshot
+    if re.search(r"\bprint\s+(?:the\s+)?screen\b|\btake\s+(?:a\s+)?screenshot\b", t):
+        return ClassificationResult(intent="screenshot", confidence=0.92, entities={}, source="rule")
+
+    # "turn off" → shutdown (unless audio context)
+    if re.search(r"\b(?:turn|power|switch)\s+(?:it\s+)?off\b", t):
+        if not words & {"music","sound","audio","song","track","spotify"}:
+            return ClassificationResult(
+                intent="shutdown", confidence=0.88,
+                entities=_extract_entities(text, "shutdown"), source="rule"
+            )
+
+    # "turn up/down (the volume)" → volume direction
+    if re.search(r"\bturn\s+(?:(?:the|it|that)\s+)?(?:volume\s+)?up\b", t) or \
+       (re.search(r"\bturn\s+up\b", t) and "volume" in words):
+        return ClassificationResult(intent="volume_up", confidence=0.90, entities={}, source="rule")
+    if re.search(r"\bturn\s+(?:(?:the|it|that)\s+)?(?:volume\s+)?down\b", t) or \
+       (re.search(r"\bturn\s+down\b", t) and "volume" in words):
+        return ClassificationResult(intent="volume_down", confidence=0.90, entities={}, source="rule")
+
+    # "what time/day/date is it" style
+    if re.search(
+        r"\b(?:what(?:\'s)?\s+(?:the\s+)?(?:time|date|day|today)"
+        r"|current\s+(?:time|date)|(?:time|day|date)\s+is\s+it)\b", t
+    ):
+        return ClassificationResult(intent="time_query", confidence=0.92, entities={}, source="rule")
+
+    # "what's my X" / "what is my X" → recall
+    if re.search(r"\bwhat(?:\'s|s)?\s+(?:is\s+)?my\b", t):
+        return ClassificationResult(
+            intent="recall", confidence=0.88,
+            entities=_extract_entities(text, "recall"), source="rule"
+        )
+
+    # "don't forget" → remember
+    if re.search(r"\bdon(?:'t|t)\s+(?:forget|lose)\b", t):
+        return ClassificationResult(
+            intent="remember", confidence=0.85,
+            entities=_extract_entities(text, "remember"), source="rule"
+        )
+
+    # "shut down" / "shut it down" → shutdown
+    if re.search(r"\bshut\s+(?:it\s+|the\s+pc\s+|my\s+pc\s+)?down\b", t):
+        return ClassificationResult(
+            intent="shutdown", confidence=0.88,
+            entities=_extract_entities(text, "shutdown"), source="rule"
+        )
+
+    # ── Score intents by keyword presence ────────────────────────────
+
+    scores: Dict[str, int] = {}
+    for intent, (triggers, context) in _INTENT_KEYWORDS.items():
+        hits = words & triggers
+        if hits:
+            scores[intent] = len(hits) * 3 + len(words & context)
+
+    # ── Context-based score boosts ────────────────────────────────────
+
+    # "louder" / "quieter" directly → volume direction (no "volume" word needed)
+    if words & {"louder","crank","amplify"}:
+        scores["volume_up"] = scores.get("volume_up", 0) + 10
+    if words & {"quieter","softer"}:
+        scores["volume_down"] = scores.get("volume_down", 0) + 10
+
+    # schedule_task: boost when reminder word + time unit present
+    if words & {"remind","reminder","alarm","timer","notify","alert","schedule"}:
+        if words & {"minutes","minute","hours","hour","seconds","second","mins","hrs"}:
+            scores["schedule_task"] = scores.get("schedule_task", 0) + 8
+
+    # "bright" + "how" → system_info; otherwise brightness direction
+    if words & {"brightness","bright"}:
+        if "how" in words:
+            scores["system_info"] = scores.get("system_info", 0) + 8
+        elif words & {"up","increase","raise","brighter","more","max","higher"}:
+            scores["brightness_up"] = scores.get("brightness_up", 0) + 10
+        elif words & {"down","decrease","lower","dimmer","less","min","dim"}:
+            scores["brightness_down"] = scores.get("brightness_down", 0) + 10
+
+    # Volume direction via "volume" + directional words
+    if "volume" in words:
+        if words & {"up","increase","raise","higher","louder","more","crank","boost","max","full"}:
+            scores["volume_up"] = scores.get("volume_up", 0) + 10
+        elif words & {"down","decrease","lower","reduce","softer","quieter","less","drop","min"}:
+            scores["volume_down"] = scores.get("volume_down", 0) + 10
+        elif words & {"set","put","change","adjust","make"}:
+            scores["set_volume"] = scores.get("set_volume", 0) + 8
+
+    # "open/launch/run + known app" → boost open_app
+    if words & {"open","launch","start","run","fire","bring","boot"}:
+        verb_free = _ACTION_VERB_PAT.sub("", _strip_fillers(t)).strip()
+        if _find_app_in_text(verb_free):
+            scores["open_app"] = scores.get("open_app", 0) + 8
+
+    # "close/quit/kill + known app" → boost close_app; suppress shutdown
+    if words & {"close","quit","kill","terminate","exit"}:
+        verb_free = re.sub(
+            r"^(?:close|quit|kill|terminate|exit|force\s+quit)\s+(?:my\s+)?", "", _strip_fillers(t), flags=re.I
+        ).strip()
+        if _find_app_in_text(verb_free):
+            scores["close_app"] = scores.get("close_app", 0) + 8
+        scores.pop("shutdown", None)
+
+    # "stop" disambiguation: media vs cancel_shutdown
+    if "stop" in words:
+        if words & {"music","song","track","spotify","playing","playback","audio","media"}:
+            scores["media_stop"] = scores.get("media_stop", 0) + 8
+            scores.pop("cancel_shutdown", None)
+        elif words & {"shutdown","restart","reboot","shutting"}:
+            scores["cancel_shutdown"] = scores.get("cancel_shutdown", 0) + 8
+            scores.pop("media_stop", None)
+
+    # "cancel/abort" + shutdown context → cancel_shutdown
+    if words & {"cancel","abort","undo"}:
+        if words & {"shutdown","restart","reboot","shutting"}:
+            scores["cancel_shutdown"] = scores.get("cancel_shutdown", 0) + 10
+
+    # "search/find" + web keywords → web_search; file context → file_search
+    if words & {"search","find","look","locate"}:
+        if words & {"online","web","internet","google","bing"}:
+            scores.pop("file_search", None)
+            scores["web_search"] = scores.get("web_search", 0) + 8
+
+    # "list/show" + location words → list_files; suppress file_search
+    if words & {"list","ls","show","display"} and words & {"file","files","folder","directory","contents","in","inside"}:
+        scores["list_files"] = scores.get("list_files", 0) + 6
+        scores.pop("file_search", None)
+
+    # "open" + file extension → open_file over open_app
+    if "open_app" in scores and "open_file" in scores:
+        if _EXT_PAT.search(t):
+            scores.pop("open_app", None)
+        else:
+            scores.pop("open_file", None)
+
+    # "what" questions
+    if words & {"what","whats"}:
+        if words & {"running","active"} and words & {"apps","processes","programs","tasks","applications"}:
+            scores["process_list"] = scores.get("process_list", 0) + 8
+        if words & {"can","could","do","does"} and "you" in words:
+            scores["help"] = scores.get("help", 0) + 5
+        if words & {"time","date","day","clock"}:
+            scores["time_query"] = scores.get("time_query", 0) + 8
+        if "my" in words:
+            scores["recall"] = scores.get("recall", 0) + 6
+
+    if not scores:
+        return ClassificationResult(intent="unknown", confidence=0.5, source="rule")
+
+    best = max(scores, key=lambda i: scores[i])
+    entities = _extract_entities(text, best)
+    return ClassificationResult(intent=best, confidence=0.85, entities=entities, source="rule")
 
 
 # ─────────────────────────────────────────────

@@ -427,34 +427,34 @@ class SystemTools:
 ║                    SENTINEL COMMANDS                         ║
 ╠══════════════════════════════════════════════════════════════╣
 ║ APP CONTROL                                                  ║
-║   open chrome / rider / spotify / discord / edge            ║
+║   open chrome / rider / spotify / discord / edge             ║
 ║   close chrome / visual studio                               ║
-║   open youtube.com  |  go to reddit.com                     ║
+║   open youtube.com  |  go to reddit.com                      ║
 ║                                                              ║
 ║ VOLUME & MEDIA                                               ║
-║   volume up / down  |  mute / unmute                        ║
-║   set volume to 50  |  max volume                           ║
-║   play / pause  |  next song  |  previous track             ║
+║   volume up / down  |  mute / unmute                         ║
+║   set volume to 50  |  max volume                            ║
+║   play / pause  |  next song  |  previous track              ║
 ║                                                              ║
 ║ SCREEN & SYSTEM                                              ║
 ║   take a screenshot                                          ║
 ║   brightness up / down                                       ║
-║   minimize all windows  |  show desktop                     ║
+║   minimize all windows  |  show desktop                      ║
 ║   lock screen  |  sleep                                      ║
-║   shutdown in 30 minutes  |  restart                        ║
-║   what time is it  |  what's today's date                   ║
+║   shutdown in 30 minutes  |  restart                         ║
+║   what time is it  |  what's today's date                    ║
 ║                                                              ║
 ║ FILES                                                        ║
-║   find all pdfs  |  search for mp3s in downloads            ║
+║   find all pdfs  |  search for mp3s in downloads             ║
 ║   create a folder called Demo                                ║
-║   move every png into Images  |  list files in desktop      ║
+║   move every png into Images  |  list files in desktop       ║
 ║                                                              ║
 ║ MEMORY                                                       ║
 ║   remember my IDE is Rider                                   ║
 ║   what is my favourite ide?                                  ║
 ║                                                              ║
 ║ INFO                                                         ║
-║   system info  |  what's running  |  remind me in 10 min   ║
+║   system info  |  what's running  |  remind me in 10 min     ║
 ╚══════════════════════════════════════════════════════════════╝
 """.strip()
         return True, help_text

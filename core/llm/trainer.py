@@ -4,7 +4,6 @@ Sentinel LLM Trainer
 Trains the intent-classification head on synthetic command data.
 Uses mixed-precision (fp16) for the RTX 3050 (4 GB VRAM).
 
-Typical run time on a 3050: ~5–15 minutes for 20 epochs on the bundled dataset.
 """
 
 import os

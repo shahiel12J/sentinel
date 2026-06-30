@@ -83,7 +83,7 @@ def _fmt_size(n: int) -> str:
     for unit in ("B", "KB", "MB", "GB"):
         if n < 1024:
             return f"{n:.0f} {unit}" if n == int(n) else f"{n:.1f} {unit}"
-        n /= 1024
+        n //= 1024
     return f"{n:.1f} TB"
 
 def _short_location(path: Path) -> str:

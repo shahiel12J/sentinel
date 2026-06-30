@@ -270,8 +270,7 @@ class StepCard(QFrame):
 class ParticleSphereWidget(QWidget):
     """
     Animated 3-D particle sphere rendered with QPainter.
-    Uses a Fibonacci lattice for uniform dot distribution and
-    dual-frequency sine-wave distortion for an organic look.
+    Uses a Fibonacci lattice for uniform dot distribution.
     """
 
     _COLORS = {
